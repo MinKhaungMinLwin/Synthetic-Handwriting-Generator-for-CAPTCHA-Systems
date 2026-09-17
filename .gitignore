@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Downloaded training data and generated model artifacts
+data/
+checkpoints/

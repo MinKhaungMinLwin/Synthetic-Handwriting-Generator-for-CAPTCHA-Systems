@@ -1,5 +1,5 @@
 # Conditional Generative Models for Handwritten CAPTCHAs 
-This project explores **conditional generative models** to ceate synthetic handwritten digits for CAPTCHA-style human verification 
+This project explores **conditional generative models** to create synthetic handwritten digits for CAPTCHA-style human verification.
 
 - A **Conditional GAN (cGAN)**
 - A **Conditional Diffusion Model**
@@ -9,7 +9,25 @@ Both models are trained on **MNIST** and evaluated using:
 - **Frechet Inception Distance (FID)** - measures realism & diversity
 - **Downstream classifier accuracy** - how useful the synthetic data is for training a classifier
 
-This project is structured with **starter code with ToDos** in both python modules and notebooks.
+The project provides reusable Python modules and notebooks for training and evaluation.
+
+## Setup and execution
+
+Create a Python environment, install the dependencies, and launch Jupyter from the
+`starter` directory so that notebook imports and output paths resolve consistently:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cd starter
+jupyter lab
+```
+
+Run the notebooks in numeric order. Training notebooks save checkpoints under the
+project-level `checkpoints/` directory; the evaluation notebook loads those final
+checkpoints and reports FID plus real-MNIST accuracy for classifiers trained on each
+synthetic dataset.
 
 
 

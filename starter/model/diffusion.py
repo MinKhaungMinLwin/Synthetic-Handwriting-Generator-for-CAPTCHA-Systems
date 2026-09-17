@@ -10,9 +10,17 @@ import torch.nn.functional as F
 import math
 
 def timestep_embedding(timesteps, dim):
+    """Create sinusoidal timestep embeddings with shape ``(batch, dim)``."""
+    if dim < 1:
+        raise ValueError("embedding dimension must be positive")
     device = timesteps.device
     half = dim // 2
-    freqs = torch.exp(-math.log(10000) * torch.arange(half, device=device) / half)
+    if half == 0:
+        return timesteps.float().unsqueeze(1)
+    denominator = half
+    freqs = torch.exp(
+        -math.log(10000) * torch.arange(half, device=device) / denominator
+    )
     args = timesteps[:, None].float() * freqs[None]
     emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
     if dim % 2 == 1:
@@ -23,9 +31,12 @@ class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, time_dim, num_classes):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1)
-        self.norm1 = nn.GroupNorm(8, out_channels)
+        groups = min(8, out_channels)
+        while out_channels % groups != 0:
+            groups -= 1
+        self.norm1 = nn.GroupNorm(groups, out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1)
-        self.norm2 = nn.GroupNorm(8, out_channels)
+        self.norm2 = nn.GroupNorm(groups, out_channels)
 
         self.time_emb = nn.Linear(time_dim, out_channels)
         self.label_emb = nn.Embedding(num_classes, out_channels)
@@ -45,6 +56,7 @@ class ResidualBlock(nn.Module):
 class ConditionalUNet(nn.Module):
     def __init__(self, num_classes=10, img_channels=1, base_channels=64, time_dim=128):
         super().__init__()
+        self.time_dim = time_dim
         self.time_mlp = nn.Sequential(
             nn.Linear(time_dim, time_dim), nn.SiLU(),
             nn.Linear(time_dim, time_dim)
@@ -63,15 +75,22 @@ class ConditionalUNet(nn.Module):
         self.output = nn.Conv2d(base_channels, img_channels, 1)
 
     def forward(self, x, t, y):
-        t_emb = self.time_mlp(timestep_embedding(t, t.shape[0] * 0 + 128))
+        if x.ndim != 4:
+            raise ValueError(f"x must be a BCHW tensor, got shape {tuple(x.shape)}")
+        if t.ndim != 1 or y.ndim != 1 or t.size(0) != x.size(0) or y.size(0) != x.size(0):
+            raise ValueError("x, t, and y must have matching batch dimensions")
+
+        t_emb = self.time_mlp(timestep_embedding(t, self.time_dim))
         h1 = self.down1(x, t_emb, y)
         h2 = self.down2(F.avg_pool2d(h1, 2), t_emb, y)
         h3 = self.down3(F.avg_pool2d(h2, 2), t_emb, y)
 
         h_mid = self.mid(h3, t_emb, y)
 
-        h = self.up3(torch.cat([F.interpolate(h_mid, scale_factor=2), h2], dim=1), t_emb, y)
-        h = self.up2(torch.cat([F.interpolate(h, scale_factor=2), h1], dim=1), t_emb, y)
-        h = self.up1(torch.cat([F.interpolate(h, scale_factor=1), x], dim=1), t_emb, y)
+        h = F.interpolate(h_mid, size=h2.shape[-2:], mode="nearest")
+        h = self.up3(torch.cat([h, h2], dim=1), t_emb, y)
+        h = F.interpolate(h, size=h1.shape[-2:], mode="nearest")
+        h = self.up2(torch.cat([h, h1], dim=1), t_emb, y)
+        h = self.up1(torch.cat([h, x], dim=1), t_emb, y)
 
         return self.output(h)

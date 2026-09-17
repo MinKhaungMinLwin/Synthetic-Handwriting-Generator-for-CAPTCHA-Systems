@@ -4,14 +4,19 @@ train_diffusion.py
 Defines training loop and sampling utilities for the Conditional Diffusion Model.
 """
 
-import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-from utils.checkpoint import save_checkpoint
 from tqdm import tqdm
+
+try:
+    from ..utils.checkpoint import save_checkpoint
+except ImportError:  # Support notebooks launched from the starter directory.
+    from utils.checkpoint import save_checkpoint
 
 
 def linear_beta_schedule(timesteps):
+    if timesteps < 1:
+        raise ValueError("timesteps must be at least 1")
     beta_start, beta_end = 1e-4, 0.02
     return torch.linspace(beta_start, beta_end, timesteps)
 
@@ -26,6 +31,9 @@ def sample_images(
     timesteps=200,
     class_labels=None,
 ):
+    """Generate class-conditioned samples with the DDPM reverse process."""
+    if num_samples < 1:
+        raise ValueError("num_samples must be at least 1")
     betas = linear_beta_schedule(timesteps).to(device)
     alphas = 1.0 - betas
     alphas_cumprod = torch.cumprod(alphas, 0)
@@ -37,8 +45,14 @@ def sample_images(
             [i % num_classes for i in range(num_samples)], device=device
         )
     else:
-        labels = class_labels.to(device)
+        labels = torch.as_tensor(class_labels, dtype=torch.long, device=device)
+        if labels.shape != (num_samples,):
+            raise ValueError(
+                f"class_labels must have shape ({num_samples},), got {tuple(labels.shape)}"
+            )
 
+    was_training = model.training
+    model.eval()
     for t in reversed(range(timesteps)):
         t_tensor = torch.full((num_samples,), t, device=device, dtype=torch.long)
         pred_noise = model(imgs, t_tensor, labels)
@@ -49,18 +63,31 @@ def sample_images(
             imgs - ((1 - alpha) / torch.sqrt(1 - alpha_bar)) * pred_noise
         ) + torch.sqrt(betas[t]) * noise
 
-    return imgs, labels
+    if was_training:
+        model.train()
+    return imgs.clamp(-1, 1), labels
 
 
 def train_diffusion(
-    model, dataloader, device, num_classes, timesteps=200, epochs=20, lr=1e-4
+    model, dataloader, device, num_classes, timesteps=200, epochs=20, lr=1e-4,
+    checkpoint_dir="../checkpoints", checkpoint_every=5,
 ):
+    """Train a conditional DDPM denoiser using the noise-prediction objective."""
+    if epochs < 1:
+        raise ValueError("epochs must be at least 1")
+    if len(dataloader) < 1:
+        raise ValueError("dataloader must contain at least one batch")
+    del num_classes  # Labels come from the dataset; retained for API compatibility.
+    model.to(device)
+    model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     betas = linear_beta_schedule(timesteps).to(device)
     alphas = 1.0 - betas
     alphas_cumprod = torch.cumprod(alphas, 0)
 
+    history = []
     for epoch in range(epochs):
+        running_loss = 0.0
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
         for imgs, labels in pbar:
             imgs, labels = imgs.to(device), labels.to(device)
@@ -77,13 +104,21 @@ def train_diffusion(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            running_loss += loss.item()
             pbar.set_postfix(loss=loss.item())
 
-        print(f"Epoch {epoch+1} completed. Loss: {loss.item():.4f}")
+        epoch_loss = running_loss / len(dataloader)
+        history.append(epoch_loss)
+        print(f"Epoch {epoch+1} completed. Loss: {epoch_loss:.4f}")
 
-        if (epoch + 1) % 5 == 0:
+        if checkpoint_every and (epoch + 1) % checkpoint_every == 0:
             save_checkpoint(
-                model, optimizer, epoch + 1, loss.item(), name="diffusion_unet"
+                model, optimizer, epoch + 1, epoch_loss, name="diffusion_unet",
+                path=checkpoint_dir,
             )
 
-    save_checkpoint(model, optimizer, name="diffusion_unet", epoch="final")
+    save_checkpoint(
+        model, optimizer, epoch="final", loss=history[-1],
+        name="diffusion_unet", path=checkpoint_dir,
+    )
+    return history
